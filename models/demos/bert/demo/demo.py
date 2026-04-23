@@ -108,6 +108,35 @@ def run_bert_question_and_answering_inference(
             return_token_type_ids=True,
             return_tensors="pt",
         )
+        NUM_LOOP = 10
+        for loop in range(NUM_LOOP - 1):
+            position_ids = positional_ids(config, bert_input.input_ids)
+            profiler.start(f"end_to_end_inference_{iteration}")
+            profiler.start(f"preprocessing_input")
+            ttnn_bert_inputs = bert.preprocess_inputs(
+                bert_input["input_ids"],
+                bert_input["token_type_ids"],
+                position_ids,
+                bert_input["attention_mask"],
+                device=device,
+            )
+            profiler.end(f"preprocessing_input")
+
+            profiler.start(f"inference_time")
+            tt_output = bert.bert_for_question_answering(
+                config,
+                *ttnn_bert_inputs,
+                parameters=parameters,
+            )
+            profiler.end(f"inference_time")
+
+            profiler.start(f"post_processing_output_to_string")
+
+            tt_output = (
+                ttnn.to_torch(ttnn.from_device(tt_output)).reshape(batch_size, 1, sequence_size, -1).to(torch.float32)
+            )
+
+            profiler.end(f"end_to_end_inference_{iteration}")
 
         position_ids = positional_ids(config, bert_input.input_ids)
         profiler.start(f"end_to_end_inference_{iteration}")
@@ -128,6 +157,7 @@ def run_bert_question_and_answering_inference(
             parameters=parameters,
         )
         profiler.end(f"inference_time")
+
         profiler.start(f"post_processing_output_to_string")
 
         tt_output = (
@@ -150,7 +180,7 @@ def run_bert_question_and_answering_inference(
 
             tt_answer = nlp.postprocess([tt_res], **postprocess_params)
 
-            logger.info(f"answer: {tt_answer['answer']}\n")
+            logger.info(f"answer: {tt_answer['answer']}")
             model_answers[i] = tt_answer["answer"]
 
         profiler.end("post_processing_output_to_string")
@@ -164,13 +194,25 @@ def run_bert_question_and_answering_inference(
             "iteration": profiler.get(f"iteration_{iteration}"),
         }
 
-        logger.info(f"tt_model_name: {tt_model_name}")
-        logger.info(f"preprocessing_parameter: {measurements['preprocessing_parameter']} s")
-        logger.info(f"preprocessing_input Iteration {iteration}: {measurements['preprocessing_input']} s")
+        logger.info(f"NUM_LOOP: {NUM_LOOP}")
+        # logger.info(f"preprocessing_parameter: {measurements['preprocessing_parameter']} s")
+        # logger.info(f"preprocessing_input Iteration {iteration}: {measurements['preprocessing_input']} s")
         logger.info(f"inference_time Iteration {iteration}: {measurements['inference_time']} s")
-        logger.info(f"post_processing Iteration {iteration}: {measurements['post_processing']} s")
+        # logger.info(f"post_processing Iteration {iteration}: {measurements['post_processing']} s")
         logger.info(f"End to end inference Iteration {iteration}: {measurements['end_to_end_inference']} s")
-        logger.info(f"iteration_{iteration} total time: {measurements['iteration']} s")
+        # logger.info(f"iteration_{iteration} total time: {measurements['iteration']} s")
+
+        inf = measurements["inference_time"]
+        inf_ips_b = 1.0 / inf * batch_size
+        logger.info(f"iteration_{iteration} inf input/s: {inf_ips_b} inputs/sec")
+        e2e_inf = measurements["end_to_end_inference"]
+        e2e_ips_b = 1.0 / e2e_inf * batch_size
+        logger.info(f"iteration_{iteration} e2e inf input/s: {e2e_ips_b} inputs/sec")
+        inf_ips = 1.0 / inf
+        logger.info(f"iteration_{iteration} for B1 inf input/s: {inf_ips} inputs/sec")
+        e2e_ips = 1.0 / e2e_inf
+        logger.info(f"iteration_{iteration} e2e B1 inf input/s: {e2e_ips} inputs/sec")
+
         profiler.clear()
     return measurements
 
@@ -275,8 +317,12 @@ def run_bert_question_and_answering_inference_squad_v2(
         logger.info(f"\tCPU_Eval: exact: {cpu_eval_score['exact']} -- F1:  {cpu_eval_score['f1']}")
 
 
+# @pytest.mark.parametrize("bert", [ttnn_optimized_bert, ttnn_bert, ttnn_optimized_sharded_bert])
+
+
+@pytest.mark.parametrize("input_path", ["models/demos/bert/demo/input_data.json"])
 @pytest.mark.parametrize("model_name", ["phiyodr/bert-large-finetuned-squad2"])
-@pytest.mark.parametrize("bert", [ttnn_optimized_bert, ttnn_bert, ttnn_optimized_sharded_bert])
+@pytest.mark.parametrize("bert", [ttnn_optimized_sharded_bert])
 @pytest.mark.parametrize(
     "n_iterations",
     ((5),),
@@ -285,7 +331,7 @@ def test_demo(input_path, model_name, bert, n_iterations, model_location_generat
     return run_bert_question_and_answering_inference(
         device=device,
         model_name=model_name,
-        batch_size=8,
+        batch_size=1,
         sequence_size=384,
         bert=bert,
         model_location_generator=model_location_generator,
