@@ -182,11 +182,15 @@ def run_bert_question_and_answering_inference(
 
     # set up huggingface model - TT model will use weights from this model
     model_name = str(model_location_generator(model_version, model_subdir="Bert"))
+    print("!!! model_name =", model_name, flush=True)
     hugging_face_reference_model = BertForQuestionAnswering.from_pretrained(model_name, torchscript=False)
     hugging_face_reference_model.eval()
 
+    print(f"!!! model =", hugging_face_reference_model)
+
     # set up tokenizer
     tokenizer_name = str(model_location_generator(model_version, model_subdir="Bert"))
+    print("!!! tokenizer_name =", tokenizer_name, flush=True)
     tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
     nlp = pipeline(
         "question-answering",
@@ -196,6 +200,7 @@ def run_bert_question_and_answering_inference(
 
     # load context+question from provided input file
     context, question = load_inputs(input_path, batch)
+    print("!!! load_inputs done", flush=True)
 
     # Prepare preprocessed_inputs which will be used with nlp.postprocess to extract string
     # answers from context after TT models produces start and end logits
@@ -252,6 +257,9 @@ def run_bert_question_and_answering_inference(
     # tt_bert_input = tt_bert_model.model_preprocessing(**bert_input)
     # profiler.end(f"processing_input_two")
 
+    print("!!!!!", model_config["OP4_SOFTMAX_ATTENTION_MASK_MEMCFG"])
+    print("!!!!!", model_config["INPUT_EMBEDDINGS_MEMCFG"])
+
     ##### Run TT Model to Fill Cache Start
     profiler.disable()
 
@@ -283,6 +291,7 @@ def run_bert_question_and_answering_inference(
     profiler.end(f"model_run_for_inference")
 
     # running in a loop
+    profiler.start(f"model_loop_for_inference")
     for i in range(NUM_RUNS):
         tt_attention_mask = tt_bert_model.model_attention_mask(**bert_input)
         tt_embedding_inputs = tt_bert_model.embeddings.preprocess_embedding_inputs(**bert_input)
@@ -293,6 +302,7 @@ def run_bert_question_and_answering_inference(
         }
         tt_embedding = tt_bert_model.model_embedding(**tt_embedding_inputs)
         _tt_out = tt_bert_model(tt_embedding, tt_attention_mask).cpu()
+    profiler.end(f"model_loop_for_inference")
 
     ##### Output Postprocessing Start
     profiler.start("processing_output_to_string")
@@ -329,8 +339,8 @@ def run_bert_question_and_answering_inference(
         "compile": profiler.get("first_model_run_with_compile")
         - (profiler.get("model_run_for_inference") / SINGLE_RUN),
         f"inference_for_single_run_batch_{batch}_without_cache": profiler.get("first_model_run_with_compile"),
-        f"inference_for_{SINGLE_RUN}_run_batch_{batch}_without_cache": profiler.get("model_run_for_inference"),
-        "inference_throughput": (SINGLE_RUN * batch) / profiler.get("model_run_for_inference"),
+        f"inference_for_{NUM_RUNS}_run_batch_{batch}_without_cache": profiler.get("model_loop_for_inference"),
+        "inference_throughput": (NUM_RUNS * batch) / profiler.get("model_loop_for_inference"),
         "post_processing": profiler.get("processing_output_to_string"),
     }
 
@@ -341,7 +351,7 @@ def run_bert_question_and_answering_inference(
         f"inference time for single run of model with batch size {batch} without using cache: {measurements[f'inference_for_single_run_batch_{batch}_without_cache']} s"
     )
     logger.info(
-        f"inference time for {SINGLE_RUN} run(s) of model with batch size {batch} and using cache: {measurements[f'inference_for_{SINGLE_RUN}_run_batch_{batch}_without_cache']} s"
+        f"inference time for {NUM_RUNS} run(s) of model with batch size {batch} and using cache: {measurements[f'inference_for_{NUM_RUNS}_run_batch_{batch}_without_cache']} s"
     )
     logger.info(f"inference throughput: {measurements['inference_throughput'] } inputs/s")
     logger.info(f"post processing time: {measurements['post_processing']} s")
@@ -350,7 +360,9 @@ def run_bert_question_and_answering_inference(
     return measurements, model_answers
 
 
-@pytest.mark.parametrize("batch", (7, 8, 12), ids=["batch_7", "batch_8", "batch_12"])
+@pytest.mark.parametrize(
+    "batch", (1, 2, 3, 7, 8, 12), ids=["batch_1", "batch_2", "batch_3", "batch_7", "batch_8", "batch_12"]
+)
 @pytest.mark.parametrize(
     "input_path, NUM_RUNS",
     (("models/demos/metal_BERT_large_11/demo/input_data.json", 1),),
