@@ -191,6 +191,7 @@ def get_model_config(batch, device_grid_size, model_config_str):
 
     elif model_config_str == "BFLOAT8_B-L1" or model_config_str == "BFLOAT8_B-DRAM":
         grid_size = ttnn.CoreCoord(12, batch)
+        print("!!! BFLOAT8_B-L1/DRAM grid_size=", grid_size)
         new_config_values = {
             "OP3_PRE_SOFTMAX_BMM_CONFIG": ttnn.MatmulMultiCoreReuseProgramConfig(
                 compute_with_storage_grid_size=grid_size,
@@ -297,6 +298,7 @@ def get_model_config(batch, device_grid_size, model_config_str):
         else:
             assert False, f"Device grid size does not support batch {batch} {model_config_str} configuration"
         transpose_mm_mcast = shard_orientation == ttnn.ShardOrientation.COL_MAJOR
+        print("!!! BFLOAT8_B-SHARDED grid_size=", grid_size)
         new_config_values = {
             "GRID_SIZE": grid_size,
             "SHARD_SIZE": [384, 128],
